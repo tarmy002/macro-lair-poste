@@ -1,0 +1,19 @@
+# ファイル名が投稿日（JST）になります: queue/YYYY-MM-DD.yml
+# 1日1件。Actions は JST 20:50 ごろに起動して、その日のファイルを投稿します。
+
+type: carousel        # carousel（2〜10枚）/ image（1枚）/ reel（動画1本）
+
+media:                # media/ からの相対パス。順番がそのまま並び順
+  - media/2026-08-21_nihontokage_1.jpg
+  - media/2026-08-21_nihontokage_2.jpg
+
+# reel のときだけ使える任意項目
+# cover: media/thumb.jpg
+
+caption: |
+  ここに本文。改行はそのまま反映されます。
+
+  #タグ #は #本文の #末尾に
+
+first_comment: |
+  #最初のコメントに置く追加タグ #発見面を増やす実験
