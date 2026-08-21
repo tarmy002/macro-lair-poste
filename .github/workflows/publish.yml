@@ -1,0 +1,48 @@
+name: publish-instagram
+
+on:
+  schedule:
+    # JST 20:50 = UTC 11:50（GitHub の cron は数分〜十数分遅れることがある）
+    - cron: '50 11 * * *'
+  workflow_dispatch:
+    inputs:
+      date:
+        description: '投稿する日付 (YYYY-MM-DD)。空なら今日(JST)'
+        required: false
+      dry_run:
+        description: 'true にすると API を叩かず組み立てだけ確認'
+        required: false
+        default: 'false'
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - run: pip install -r requirements.txt
+
+      - name: Publish
+        env:
+          IG_USER_ID:      ${{ secrets.IG_USER_ID }}
+          IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
+          DRY_RUN:         ${{ inputs.dry_run == 'true' && '1' || '0' }}
+        run: python scripts/publish.py ${{ inputs.date }}
+
+      - name: Commit published marker
+        if: success()
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            git config user.name  "macro.lair bot"
+            git config user.email "bot@users.noreply.github.com"
+            git add -A
+            git commit -m "published: $(date -u +%F)"
+            git push
+          fi
