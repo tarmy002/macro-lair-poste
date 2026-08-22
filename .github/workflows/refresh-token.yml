@@ -1,0 +1,118 @@
+name: refresh-instagram-token
+
+on:
+  schedule:
+    # 毎週月曜 JST 12:00 = UTC 03:00
+    # （publish.yml の 11:50 UTC とはぶつからない時間帯にしている）
+    - cron: '0 3 * * 1'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'true にすると Secrets を書き換えず、延長できるかだけ確認する'
+        required: false
+        default: 'false'
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: refresh-instagram-token
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - run: pip install -r requirements.txt
+
+      - name: Refresh token and update secret
+        env:
+          IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
+          GH_TOKEN:        ${{ secrets.GH_PAT }}
+          DRY_RUN:         ${{ inputs.dry_run == 'true' && '1' || '0' }}
+        run: |
+          set -euo pipefail
+
+          # refresh_token.py は新トークンを stdout に、残り日数を stderr に出す
+          if ! python scripts/refresh_token.py > /tmp/token.txt 2> /tmp/refresh.log; then
+            echo "::error::トークンの延長に失敗した"
+            cat /tmp/refresh.log
+            exit 1
+          fi
+
+          NEW_TOKEN="$(cat /tmp/token.txt)"
+          rm -f /tmp/token.txt
+          echo "::add-mask::$NEW_TOKEN"
+
+          if [ -z "$NEW_TOKEN" ]; then
+            echo "::error::新しいトークンが空だった。Secrets は書き換えない"
+            exit 1
+          fi
+
+          {
+            echo '### トークン延長'
+            echo '```'
+            cat /tmp/refresh.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$DRY_RUN" = "1" ]; then
+            echo "dry_run のため Secrets は書き換えていない。延長そのものは成功している。"
+            echo '**dry_run のため Secrets は未更新**' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          gh secret set IG_ACCESS_TOKEN --repo "$GITHUB_REPOSITORY" --body "$NEW_TOKEN"
+          echo "IG_ACCESS_TOKEN を更新した。"
+          echo '**IG_ACCESS_TOKEN を更新した**' >> "$GITHUB_STEP_SUMMARY"
+
+      # 定期実行で失敗したときだけ Issue を立てる。
+      # 失敗が静かに流れると、60日後に投稿が黙って止まるため。
+      - name: Open an issue on failure
+        if: failure() && github.event_name == 'schedule'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = '⚠️ Instagram アクセストークンの自動延長に失敗した';
+            const body = [
+              '定期実行の `refresh-instagram-token` が失敗した。',
+              '',
+              `実行ログ: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              '',
+              '**放置するとトークンが失効し、毎日の自動投稿が黙って止まる。**',
+              '',
+              'よくある原因:',
+              '- `IG_ACCESS_TOKEN` がすでに失効している → Meta の管理画面で取り直して Secrets に入れ直す',
+              '- `GH_PAT` が失効した、または Secrets への書き込み権限がない',
+              '- トークンが発行から24時間経っていない（この場合は翌日に手動実行すれば直る）',
+            ].join('\n');
+
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'token-refresh',
+            });
+            if (existing.data.length > 0) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.data[0].number,
+                body,
+              });
+              return;
+            }
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body,
+              labels: ['token-refresh'],
+            });
