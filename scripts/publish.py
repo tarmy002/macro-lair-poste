@@ -6,7 +6,7 @@
   python scripts/publish.py 2026-08-21 # 日付を指定
   DRY_RUN=1 python scripts/publish.py  # APIを叩かず、組み立てだけ確認
 """
-import os, sys, glob, json
+import os, sys, json
 from datetime import datetime, timezone, timedelta
 import yaml
 import ig
@@ -66,18 +66,22 @@ def main():
     if kind == "reel":
         cid = ig.create_reel_container(user_id, token, urls[0], caption=caption,
                                        cover_url=(media_url(entry["cover"]) if entry.get("cover") else None))
-        ig.wait_ready(cid, token)
     elif kind == "image":
         cid = ig.create_image_container(user_id, token, urls[0], caption=caption)
     else:
         children = []
-        for u in urls:
+        for i, u in enumerate(urls, 1):
             ch = ig.create_image_container(user_id, token, u, is_carousel_item=True)
-            children.append(ch)
             print("   child:", ch)
+            # 子コンテナも FINISHED を待つ。待たずに親を作ると公開時に 9007 で落ちる
+            ig.wait_ready(ch, token, timeout_s=300, interval_s=5, label=f"child{i}")
+            children.append(ch)
         cid = ig.create_carousel_container(user_id, token, children, caption=caption)
 
     print("[container]", cid)
+    # 画像・カルーセル・リールいずれも、公開前に処理完了を待つ
+    ig.wait_ready(cid, token, timeout_s=900, interval_s=5, label="container")
+
     media_id = ig.publish(user_id, token, cid)
     print("[published]", media_id)
 
@@ -93,8 +97,7 @@ def main():
     os.rename(path, os.path.join(done_dir, f"{date_str}.yml"))
     with open(os.path.join(done_dir, f"{date_str}.result.json"), "w", encoding="utf-8") as f:
         json.dump({"date": date_str, "type": kind, "media_id": media_id,
-                   "permalink": f"https://www.instagram.com/p/", "count": len(urls)},
-                  f, ensure_ascii=False, indent=2)
+                   "count": len(urls)}, f, ensure_ascii=False, indent=2)
     print("[done]")
     return 0
 

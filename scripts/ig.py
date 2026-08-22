@@ -50,22 +50,40 @@ def create_carousel_container(user_id, token, children, caption=None):
         p["caption"] = caption
     return _post(f"{user_id}/media", token, **p)["id"]
 
-def wait_ready(container_id, token, timeout_s=900, interval_s=10):
-    """動画は変換に時間がかかる。FINISHED になるまで待つ。"""
+def wait_ready(container_id, token, timeout_s=900, interval_s=5, label=""):
+    """コンテナが FINISHED になるまで待つ。
+    画像でもカルーセルでも、Instagram 側の処理が終わる前に publish すると
+    code 9007「The media is not ready for publishing」で落ちる。
+    """
     waited = 0
+    last = None
     while waited < timeout_s:
         st = _get(container_id, token, fields="status_code,status")
         code = st.get("status_code")
+        if code != last:
+            print(f"   [{label or container_id}] {code}")
+            last = code
         if code == "FINISHED":
             return
         if code == "ERROR":
             raise IGError(f"container {container_id} failed: {st}")
         time.sleep(interval_s)
         waited += interval_s
-    raise IGError(f"container {container_id} not ready after {timeout_s}s")
+    raise IGError(f"container {container_id} not ready after {timeout_s}s (last={last})")
 
-def publish(user_id, token, creation_id):
-    return _post(f"{user_id}/media_publish", token, creation_id=creation_id)["id"]
+def publish(user_id, token, creation_id, retries=6, backoff_s=10):
+    """9007（まだ準備中）は一時的なので、少し待って何度か試す。"""
+    for i in range(retries):
+        try:
+            return _post(f"{user_id}/media_publish", token, creation_id=creation_id)["id"]
+        except IGError as e:
+            msg = str(e)
+            transient = ("9007" in msg) or ("2207027" in msg) or ("not ready" in msg)
+            if not transient or i == retries - 1:
+                raise
+            wait = backoff_s * (i + 1)
+            print(f"   publish がまだ受け付けられません。{wait}秒待って再試行 ({i+1}/{retries-1})")
+            time.sleep(wait)
 
 def comment(media_id, token, message):
     return _post(f"{media_id}/comments", token, message=message)["id"]
